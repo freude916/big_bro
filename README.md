@@ -34,6 +34,12 @@ members = ["plugins/big_bro"]
 查重的方法是把消息体的前5条都丢crc32里。
 crc32的地址空间已经足够大了，在10000条消息的情况下碰撞率在1%左右，对于绝大多数用途来说够了。
 
+## 提示
+
+RuntimeBot disable_plugin之后会把kovi.plugin.toml里的enable_on_startup设置为false，下次启动还要手动enable。
+
+所以我还得加个永不停止的基础插件专门管理启用的插件列表吗 :(
+
 ## License
 
 This project follows CC-BY-NC 4.0 License.

@@ -28,7 +28,7 @@ static UNMANAGED_LOG: LazyLock<AMutex<File>, fn() -> AMutex<File>> = LazyLock::n
         OpenOptions::new()
             .append(true)
             .create(true)
-            .open("../logs/unmanaged.log")
+            .open("./plugins/big_bro/logs/unmanaged.log")
             .unwrap(),
     )
 });
@@ -64,6 +64,23 @@ impl TryGet for Value {
             println!("{}", self);
             None
         }
+    }
+}
+
+struct Cleaner;
+
+impl Cleaner {
+    fn nop(&self) {
+        println!("nop");
+    }
+    fn clean_up(self: &mut Self){
+        println!("正在退出。");
+    }
+}
+
+impl Drop for Cleaner {
+    fn drop(&mut self) {
+        self.clean_up();
     }
 }
 
@@ -177,49 +194,57 @@ async fn get_crc32_hash(bot: &RuntimeBot, msg_event: &MsgEvent) -> Option<u32> {
 
 fn load_last_replies() -> HashMap<i64, SystemTime> {
     // 尝试加载防重复文件
-    if Config::REPEAT_SAVE.len() > 0 && std::path::Path::new("./../save/repeat.dat").exists() {
-        let file = File::open("./../save/repeat.dat").unwrap();
+    if Config::REPEAT_SAVE.len() > 0 && std::path::Path::new(Config::REPEAT_SAVE).exists() {
+        let file = File::open(Config::REPEAT_SAVE).unwrap();
         bincode::deserialize_from(file).unwrap()
     } else {
         HashMap::new()
     }
 }
 
+const PLUGIN_NAME: &str = "big_bro";
+
 #[kovi::plugin]
-async fn dez() {
+async fn big_bro_main() {
     // 主逻辑
     let groups = Config::MANAGE_GROUPS;
 
     let bot_main = plugin::get_runtime_bot();
 
-    let last_reply_main = Arc::new(AMutex::new(load_last_replies()));
-    let last_sames = Arc::new(AMutex::new(HashMap::<u32, SystemTime>::new()));
-
     bot_main
-        .set_plugin_access_control_mode("dez", WhiteList)
-        .inspect_err(|e| println!("error: {}", e))
+        .set_plugin_access_control_mode(PLUGIN_NAME, WhiteList)
         .unwrap();
     bot_main
-        .set_plugin_access_control("dez", true)
-        .inspect_err(|e| println!("error: {}", e))
+        .set_plugin_access_control(PLUGIN_NAME, true)
         .unwrap();
     bot_main
         .set_plugin_access_control_list(
-            "dez",
+            PLUGIN_NAME,
             true,
-            SetAccessControlList::Adds(Vec::from(groups.clone())),
+            SetAccessControlList::Changes(Vec::from(groups.clone())),
         )
-        .inspect_err(|e| println!("error: {}", e))
         .unwrap();
+    bot_main
+        .set_plugin_access_control_list(
+            PLUGIN_NAME,
+            false,
+            SetAccessControlList::Changes(Vec::from(Config::ADMIN)),
+        )
+        .unwrap();
+    
+    println!("插件配置已加载");
+    
+    let last_reply_main = Arc::new(AMutex::new(load_last_replies()));
+    let last_sames = Arc::new(AMutex::new(HashMap::<u32, SystemTime>::new()));
 
+    let bot = bot_main.clone();
     let last_reply = last_reply_main.clone();
     let last_same = last_sames.clone();
 
     plugin::on_group_msg(move |msg| {
-        let bot = bot_main.clone();
+        let bot = bot.clone();
         let last_reply = last_reply.clone();
         let last_same = last_same.clone();
-
         async move {
             if !groups.contains(&msg.group_id.unwrap()) {
                 // TODO: 我不确定 plugin 的访问控制是否能生效，所以加判断
@@ -268,16 +293,21 @@ async fn dez() {
                     lock2.insert(hash, SystemTime::now());
                 }
             }
+            
+        }
+    });
 
-            {
-                // bot 管理部分
-                if msg.get_text() == "/stop" {
-                    if msg.sender.user_id == Config::ADMIN {
-                        bot.disable_plugin("dez").unwrap();
-                    } else {
-                        bot.set_group_ban(msg.group_id.unwrap(), msg.sender.user_id, 1200); // 不给玩！
-                    }
-                }
+    let bot = bot_main.clone();
+    plugin::on_admin_msg(move |msg| {
+        let bot = bot.clone();
+        async move {
+            if msg.get_text() == "/stop"{
+                msg.reply("收到，正在停止插件");
+                bot.disable_plugin(PLUGIN_NAME).unwrap();
+            }
+            if msg.get_text() == "/save"{
+                msg.reply("收到，正在重启插件");
+                bot.restart_plugin(PLUGIN_NAME).await.unwrap();
             }
         }
     });
@@ -289,20 +319,17 @@ async fn dez() {
         let last_same = last_same.clone();
         async move {
             if Config::REPEAT_SAVE.len() > 0 {
-                if let Ok(last) = Arc::try_unwrap(last_same) {
-                    let last = last.into_inner();
-                    let mut file = OpenOptions::new()
+                let mut last = last_same.lock().await;
+                let last = std::mem::take(&mut *last);
+                let mut file = OpenOptions::new()
                         .write(true)
                         .create(true)
                         .open(Config::REPEAT_SAVE)
                         .unwrap();
                     bincode::serialize_into(&mut file, &last).unwrap();
-                    println!("成功保存了重复记录，您可以继续调试了。");
-                } else {
-                    println!("？补兑！怎么获取不到？");
-                }
+                println!("尝试保存了重复记录，您可以继续调试了。");
             }
-            println!("退出完毕");
+            println!("[Done] 清理完毕。");
         }
     });
 }

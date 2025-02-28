@@ -14,5 +14,8 @@ impl Config {
 
     /// 重复消息池持久化保存（建议每天凌晨清空否则可能过大）
     /// 设为 "" 将关闭保存
-    pub const REPEAT_SAVE: &'static str = "./../save/repeat.dat";
+    pub const REPEAT_SAVE: &'static str = "./plugins/big_bro/save/repeat.dat";
+
+    /// bot 管理员
+    pub const ADMIN: [i64; 0] = [];
 }
