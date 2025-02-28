@@ -33,14 +33,14 @@ static UNMANAGED_LOG: LazyLock<AMutex<File>, fn() -> AMutex<File>> = LazyLock::n
     )
 });
 
-trait TryGet {
+trait JsonValueExtract {
     // a simple trait to get value from a json object
-    fn try_get_v(&self, key: &str) -> Option<&String>;
-    fn try_get_l(&self, key: &str) -> Option<&Vec<Value>>;
+    fn get_string(&self, key: &str) -> Option<&String>;
+    fn get_vec(&self, key: &str) -> Option<&Vec<Value>>;
 }
 
-impl TryGet for Value {
-    fn try_get_v(&self, key: &str) -> Option<&String> {
+impl JsonValueExtract for Value {
+    fn get_string(&self, key: &str) -> Option<&String> {
         if let Value::Object(map) = self {
             if let Some(Value::String(text)) = map.get(key) {
                 Some(text)
@@ -52,7 +52,7 @@ impl TryGet for Value {
         }
     }
 
-    fn try_get_l(&self, key: &str) -> Option<&Vec<Value>> {
+    fn get_vec(&self, key: &str) -> Option<&Vec<Value>> {
         if let Value::Object(map) = self {
             if let Some(Value::Array(list)) = map.get(key) {
                 Some(list)
@@ -67,24 +67,7 @@ impl TryGet for Value {
     }
 }
 
-struct Cleaner;
-
-impl Cleaner {
-    fn nop(&self) {
-        println!("nop");
-    }
-    fn clean_up(self: &mut Self){
-        println!("正在退出。");
-    }
-}
-
-impl Drop for Cleaner {
-    fn drop(&mut self) {
-        self.clean_up();
-    }
-}
-
-fn get_image_hash(url: &str) -> u32 {
+fn calculate_image_hash(url: &str) -> u32 {
     // 处理QQ图片链接，hash其file_id以确保唯一性
     // we process the image url and hash its file_id to make sure it's unique
 
@@ -101,10 +84,10 @@ fn get_image_hash(url: &str) -> u32 {
     rv
 }
 
-fn process_message<'a>(
+fn hash_message_content<'a>(
     bot: &'a RuntimeBot,
     person_msg: &'a Value,
-    pre: Option<i64>,
+    group_id: Option<i64>,
     t: i32,
 ) -> Pin<Box<dyn Future<Output = Option<u32>> + Send + 'a>> {
     // 处理消息列表，并返回crc32 hash
@@ -112,31 +95,31 @@ fn process_message<'a>(
         if t > 5 {
             return None; // too deep
         }
-
-        let msg_list = person_msg.try_get_l("message").unwrap();
+        
         let mut hasher = Hasher::new();
-        if let Some(pre) = pre {
+        if let Some(pre) = group_id {
             hasher.update(&pre.to_le_bytes());
         }
-
+        
+        let msg_list = person_msg.get_vec("message").unwrap();
         for msg in msg_list {
-            let type_ = msg.try_get_v("type").unwrap();
+            let type_ = msg.get_string("type").unwrap();
             let value = msg.get("data").unwrap();
             match type_.as_str() {
                 "text" => {
-                    if let Some(text) = value.try_get_v("text") {
+                    if let Some(text) = value.get_string("text") {
                         hasher.update(text.as_bytes());
                         // println!("caught text: {}", text);
                     }
                 }
                 "image" => {
-                    if let Some(url) = value.try_get_v("url") {
-                        let hash = get_image_hash(url);
+                    if let Some(url) = value.get_string("url") {
+                        let hash = calculate_image_hash(url);
                         hasher.update(&hash.to_le_bytes());
                     }
                 }
                 "video" => {
-                    if let Some(url) = value.try_get_v("url") {
+                    if let Some(url) = value.get_string("url") {
                         // hasher.update(&get_image_hash(url).to_le_bytes());
 
                         // put to unmanaged log
@@ -147,7 +130,7 @@ fn process_message<'a>(
                 }
                 "forward" => {
                     // FIXME: 这里获取消息怎么老报错呢？
-                    let forward_node = value.try_get_v("id").unwrap();
+                    let forward_node = value.get_string("id").unwrap();
                     let forward_pms = bot.get_forward_msg(forward_node).await;
                     if let Err(e) = forward_pms {
                         println!("获取转发消息失败！API反馈: {}", e);
@@ -155,7 +138,7 @@ fn process_message<'a>(
                         continue;
                     }
                     let forward_pms = forward_pms.unwrap();
-                    let pms = forward_pms.data.try_get_l("messages");
+                    let pms = forward_pms.data.get_vec("messages");
                     if pms.is_none() {
                         println!("获取转发消息失败！消息id: {}", forward_node);
                         println!("是否没嵌套在node里，看看下面的value: {}", value);
@@ -163,7 +146,7 @@ fn process_message<'a>(
                         continue;
                     }
                     for pm in pms.unwrap().iter().take(5) {
-                        let next = process_message(bot, pm, None, t + 1);
+                        let next = hash_message_content(bot, pm, None, t + 1);
                         if let Some(next) = next.await {
                             hasher.update(&next.to_le_bytes());
                         }
@@ -173,7 +156,7 @@ fn process_message<'a>(
                     // ignore all emojis
                 }
                 "json" => {
-                    if let Some(json) = value.try_get_v("data") {
+                    if let Some(json) = value.get_string("data") {
                         println!("caught json: {}", json);
                     }
                 }
@@ -184,15 +167,15 @@ fn process_message<'a>(
     })
 }
 
-async fn get_crc32_hash(bot: &RuntimeBot, msg_event: &MsgEvent) -> Option<u32> {
+async fn calculate_msg_hash(bot: &RuntimeBot, msg_event: &MsgEvent) -> Option<u32> {
     // 拆开MsgEvent并处理crc32 hash
     // 历史遗留问题
     let group_id = msg_event.group_id.unwrap();
 
-    process_message(bot, &msg_event.original_json, Some(group_id), 0).await
+    hash_message_content(bot, &msg_event.original_json, Some(group_id), 0).await
 }
 
-fn load_last_replies() -> HashMap<i64, SystemTime> {
+fn load_last_duplicate() -> HashMap<i64, SystemTime> {
     // 尝试加载防重复文件
     if Config::REPEAT_SAVE.len() > 0 && std::path::Path::new(Config::REPEAT_SAVE).exists() {
         let file = File::open(Config::REPEAT_SAVE).unwrap();
@@ -207,7 +190,7 @@ const PLUGIN_NAME: &str = "big_bro";
 #[kovi::plugin]
 async fn big_bro_main() {
     // 主逻辑
-    let groups = Config::MANAGE_GROUPS;
+    let access_groups = Config::MANAGE_GROUPS;
 
     let bot_main = plugin::get_runtime_bot();
 
@@ -221,7 +204,7 @@ async fn big_bro_main() {
         .set_plugin_access_control_list(
             PLUGIN_NAME,
             true,
-            SetAccessControlList::Changes(Vec::from(groups.clone())),
+            SetAccessControlList::Changes(Vec::from(access_groups.clone())),
         )
         .unwrap();
     bot_main
@@ -231,22 +214,22 @@ async fn big_bro_main() {
             SetAccessControlList::Changes(Vec::from(Config::ADMIN)),
         )
         .unwrap();
-    
+
     println!("插件配置已加载");
     
-    let last_reply_main = Arc::new(AMutex::new(load_last_replies()));
-    let last_sames = Arc::new(AMutex::new(HashMap::<u32, SystemTime>::new()));
+    let last_reply_main = Arc::new(AMutex::new(load_last_duplicate()));// 每个人上次回复的时间
+    let last_duplicate_main = Arc::new(AMutex::new(HashMap::<u32, SystemTime>::new())); // 重复哈希的时间戳
 
     let bot = bot_main.clone();
     let last_reply = last_reply_main.clone();
-    let last_same = last_sames.clone();
+    let last_duplicate = last_duplicate_main.clone();
 
     plugin::on_group_msg(move |msg| {
         let bot = bot.clone();
         let last_reply = last_reply.clone();
-        let last_same = last_same.clone();
+        let last_duplicate = last_duplicate.clone();
         async move {
-            if !groups.contains(&msg.group_id.unwrap()) {
+            if !access_groups.contains(&msg.group_id.unwrap()) {
                 // TODO: 我不确定 plugin 的访问控制是否能生效，所以加判断
                 return;
             }
@@ -273,9 +256,9 @@ async fn big_bro_main() {
 
             {
                 // 查重部分
-                let hash = get_crc32_hash(&bot, &msg).await.unwrap();
+                let hash = calculate_msg_hash(&bot, &msg).await.unwrap();
 
-                let mut lock2 = last_same.lock().await;
+                let mut lock2 = last_duplicate.lock().await;
                 if let Some(time) = lock2.get(&hash) {
                     if time.elapsed().unwrap().as_secs() < Config::MIN_REPEAT_GAP {
                         // TODO: 查到重了怎么办
@@ -293,7 +276,6 @@ async fn big_bro_main() {
                     lock2.insert(hash, SystemTime::now());
                 }
             }
-            
         }
     });
 
@@ -301,11 +283,11 @@ async fn big_bro_main() {
     plugin::on_admin_msg(move |msg| {
         let bot = bot.clone();
         async move {
-            if msg.get_text() == "/stop"{
+            if msg.get_text() == "/stop" {
                 msg.reply("收到，正在停止插件");
                 bot.disable_plugin(PLUGIN_NAME).unwrap();
             }
-            if msg.get_text() == "/save"{
+            if msg.get_text() == "/save" {
                 msg.reply("收到，正在重启插件");
                 bot.restart_plugin(PLUGIN_NAME).await.unwrap();
             }
@@ -313,20 +295,20 @@ async fn big_bro_main() {
     });
 
     // let last_reply = last_reply_main.clone();
-    let last_same = last_sames.clone();
+    let last_duplicate = last_duplicate_main.clone();
     plugin::drop(move || {
         // let last_reply = last_reply.clone();
-        let last_same = last_same.clone();
+        let last_duplicate = last_duplicate.clone();
         async move {
             if Config::REPEAT_SAVE.len() > 0 {
-                let mut last = last_same.lock().await;
+                let mut last = last_duplicate.lock().await;
                 let last = std::mem::take(&mut *last);
                 let mut file = OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .open(Config::REPEAT_SAVE)
-                        .unwrap();
-                    bincode::serialize_into(&mut file, &last).unwrap();
+                    .write(true)
+                    .create(true)
+                    .open(Config::REPEAT_SAVE)
+                    .unwrap();
+                bincode::serialize_into(&mut file, &last).unwrap();
                 println!("尝试保存了重复记录，您可以继续调试了。");
             }
             println!("[Done] 清理完毕。");
