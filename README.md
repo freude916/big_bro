@@ -36,9 +36,11 @@ crc32的地址空间已经足够大了，在10000条消息的情况下碰撞率�
 
 ## 提示
 
-RuntimeBot disable_plugin之后会把kovi.plugin.toml里的enable_on_startup设置为false，下次启动还要手动enable。
+RuntimeBot disable_plugin之后会把enable_on_startup设置为false，下次启动还要手动enable。
 
-所以我还得加个永不停止的基础插件专门管理启用的插件列表吗 :(
+所以主动关闭的功能还是别开了。
+
+或者你可以改Kovi配置，把“保存插件状态”关了。
 
 ## License
 

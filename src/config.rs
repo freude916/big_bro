@@ -1,21 +1,45 @@
-pub struct Config;
+use kovi::utils::load_toml_data;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
-impl Config {
+#[derive(Serialize, Deserialize)]
+pub struct FreqCon {
+    pub enable: bool,
+    pub min_msg_gap: u64,
+    pub fast_ban_time: usize,
+}
 
-    ///需要管理的群
-    pub const MANAGE_GROUPS: [i64; 0] = [];
-    /// 最小发消息间隔，低于此间隔禁言
-    pub const MIN_MSG_GAP: u64 = 120;
-    /// 低于间隔的禁言时间
-    pub const OF_BAN_TIME: usize = 300;
+#[derive(Serialize, Deserialize)]
+pub struct RepCon {
+    pub enable: bool,
+    pub min_repeat_gap: u64,
+}
 
-    /// 重复消息检测范围
-    pub const MIN_REPEAT_GAP: u64 = 3600;
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    pub admins: Vec<i64>,
+    pub manage_groups: Vec<i64>,
 
-    /// 重复消息池持久化保存（建议每天凌晨清空否则可能过大）
-    /// 设为 "" 将关闭保存
-    pub const REPEAT_SAVE: &'static str = "./plugins/big_bro/save/repeat.dat";
+    pub freq: FreqCon,
+    pub repeat: RepCon,
+}
 
-    /// bot 管理员
-    pub const ADMIN: [i64; 0] = [];
+pub fn load_config(data_path: &PathBuf) -> Config {
+    let config_path = data_path.join("config.toml");
+
+    let default_config = Config {
+        admins: vec![],
+        manage_groups: vec![],
+        freq: FreqCon {
+            enable: true,
+            min_msg_gap: 120,
+            fast_ban_time: 300,
+        },
+        repeat: RepCon {
+            enable: true,
+            min_repeat_gap: 3600,
+        },
+    };
+
+    load_toml_data(default_config, &config_path).unwrap()
 }

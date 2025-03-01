@@ -7,7 +7,7 @@ edition = "2024"
 [dependencies]
 kovi = "0.11.7"
 kovi-plugin-expand-napcat = "0.3.1"
-crc32fast = "1.4.2"
+crc32fast = { version = "1.4.2" }
 
-bincode = "1.3.3"
+serde = { version = "1.0.218", features = ["derive"] }
 
