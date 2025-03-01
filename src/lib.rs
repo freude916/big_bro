@@ -11,8 +11,11 @@ use kovi::{
 
 use kovi_plugin_expand_napcat::NapCatApi;
 
+use chrono::Timelike;
 use kovi::error::BotError;
+use kovi::tokio::time::sleep;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::{
     collections::HashMap,
     fs::File,
@@ -72,9 +75,8 @@ async fn calculate_image_hash(url: &str) -> u32 {
 
     let mut hasher = Hasher::new();
 
-    let mut file = UNMANAGED_LOG.lock().await;
-    file.write_all(format!("[image] {}\n", url).as_bytes())
-        .unwrap();
+    // let mut file = UNMANAGED_LOG.lock().await;
+    // file.write_all(format!("[image] {}\n", url).as_bytes()).unwrap();
     if url.len() > 148 {
         hasher.update(&url[59..94].as_bytes());
     } else {
@@ -123,12 +125,9 @@ fn hash_message_content<'a>(
                     // hasher.update(&get_image_hash(url).to_le_bytes());
                     if url.as_bytes()[0] == b'/' {
                         hasher.update(&url.as_bytes()[70..]);
-                        // In this person message, we found a local video
-                        // so it must be a duplicate video, return at once
-                        // ignore all other messages
+                        // 在当前消息中找到了一个本地视频，必重复，立即return
                         return Some(1);
                     } else {
-                        // No way to ignore download video :(
                         hasher.update(&url.as_bytes());
                     }
                 }
@@ -245,12 +244,12 @@ async fn big_bro_main() {
             {
                 // 防刷屏部分
                 let mut reply = last_reply.lock().await;
-                if let Some(time) = reply.get(&msg.sender.user_id) {
+                if let Some(time) = reply.get(&sender_id) {
                     if time.elapsed().unwrap().as_secs() < config.freq.min_msg_gap {
                         bot.set_group_ban(group_id, sender_id, config.freq.fast_ban_time);
                     }
                 };
-                reply.insert(msg.sender.user_id, SystemTime::now());
+                reply.insert(sender_id, SystemTime::now());
             }
 
             let mut pms = msg.message.iter();
@@ -259,14 +258,23 @@ async fn big_bro_main() {
                 let pm = pms.next().unwrap();
                 if pm.type_ == "text" {
                     let text = pm.data.get_string("text").unwrap();
-                    if text.len() < 10 || text.len() > 200 {
+                    println!("{}", text.len());
+                    if text.len() < 20 || text.len() > 400 {
                         bot.set_group_ban(group_id, sender_id, 3600);
                         return; // 太短或者太长的消息直接ban，懒得跟你玩了
                     }
-                    if text.contains("禁言我") {
+                    if text.len() < 100 && text.contains("禁言我") {
                         bot.set_group_ban(group_id, sender_id, 3600);
                         msg.reply("满足你😋");
                         return; // 满足你
+                    }
+                } else if pm.type_ == "video" {
+                    let url = pm.data.get_string("url").unwrap();
+                    if url.as_bytes()[0] == b'/' {
+                        bot.set_msg_emoji_like(msg.message_id as i64, "146")
+                            .await
+                            .unwrap();
+                        return; // 本地视频反馈
                     }
                 }
             }
@@ -315,18 +323,39 @@ async fn big_bro_main() {
         }
     });
 
+    let bot = bot_main.clone();
     let last_duplicate = last_duplicate_main.clone();
     let data_path = data_path.clone();
+    let manage_groups = config.manage_groups.clone();
     plugin::drop(move || {
+        let bot = bot.clone();
         let last_duplicate = last_duplicate.clone();
         let data_path = data_path.clone();
+        let manage_groups = manage_groups.clone();
         async move {
+            let local_time = chrono::Local::now();
+            if local_time.hour() == 0 {
+                for group_id in manage_groups {
+                    bot.send_group_msg(group_id, "宵禁了哈");
+                    sleep(Duration::from_secs(1)).await;
+                    bot.send_group_msg(group_id, "群公告里有发言规则和项目地址之类的，自己看。");
+                    sleep(Duration::from_secs(1)).await;
+                    bot.set_group_whole_ban(group_id, true);
+                }
+            }
             if config.repeat.enable {
-                let mut last = last_duplicate.lock().await;
-                let last = std::mem::take(&mut *last);
-                let file = data_path.join("last_duplicate.json");
-                kovi::utils::save_json_data(&last, &file).unwrap();
-                println!("保存了查重记录，您可以继续调试了。");
+                if local_time.hour() == 0 {
+                    // 丢弃前一天的查重记录
+                    let file = data_path.join("last_duplicate.json");
+                    kovi::utils::save_json_data(&HashMap::<u32, SystemTime>::new(), &file).unwrap();
+                    println!("已清空查重记录。");
+                } else {
+                    let mut last = last_duplicate.lock().await;
+                    let last = std::mem::take(&mut *last);
+                    let file = data_path.join("last_duplicate.json");
+                    kovi::utils::save_json_data(&last, &file).unwrap();
+                    println!("保存了查重记录，您可以继续调试了。");
+                }
             }
             println!("[Done] 清理完毕。");
         }
